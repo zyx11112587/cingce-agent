@@ -1,0 +1,9 @@
+# Core runtime: Python 3.11+.
+# The built-in parser, SQLite FTS5 retrieval, HTTP server and OpenAI-compatible
+# client all use the Python standard library, so no third-party package is
+# required for the default local run.
+#
+# Optional extensions can be installed later without changing the core paths:
+# sentence-transformers
+# faiss-cpu
+# paddleocr
