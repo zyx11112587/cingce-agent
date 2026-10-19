@@ -117,7 +117,7 @@
 
     .filters {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
       margin-top: 12px;
     }
@@ -251,6 +251,9 @@
           <label>地区
             <input id="region" name="region" placeholder="例如 国家">
           </label>
+          <label>文档类型
+            <input id="doc-type" name="doc_type" placeholder="政治理论 / 申论">
+          </label>
           <label>返回数量
             <input id="top-k" name="top_k" type="number" min="1" max="20" value="5">
           </label>
@@ -290,7 +293,7 @@
       try {
         const response = await fetch("/api/stats");
         const stats = await response.json();
-        setStatus(`题目 ${stats.questions} · 文档块 ${stats.chunks} · 图片 ${stats.images}`);
+        setStatus(`题目 ${stats.questions} · 文档块 ${stats.chunks} · 向量 ${stats.vectors} · 图片 ${stats.images}`);
       } catch (error) {
         setStatus("索引尚未就绪", true);
       }
@@ -300,7 +303,8 @@
       return {
         year: $("year").value.trim(),
         subject: $("subject").value.trim(),
-        region: $("region").value.trim()
+        region: $("region").value.trim(),
+        doc_type: $("doc-type").value.trim()
       };
     }
 
@@ -317,6 +321,11 @@
       const answer = question?.answer || "";
       const explanation = question?.explanation || hit.chunk?.text || "";
       const source = hit.chunk?.source_rel || "";
+      const retrieval = hit.retrieval || {};
+      const retrievalText = [
+        retrieval.bm25_rank ? `BM25 #${retrieval.bm25_rank}` : "",
+        retrieval.vector_rank ? `Vector #${retrieval.vector_rank}` : ""
+      ].filter(Boolean).join(" + ");
       const meta = [
         question?.year ? `<span class="badge">${escapeHtml(question.year)}</span>` : "",
         question?.subject ? `<span class="badge">${escapeHtml(question.subject)}</span>` : "",
@@ -326,10 +335,10 @@
       return `
         <article class="result">
           <h3>${index + 1}. ${escapeHtml(text || "未识别题干")}</h3>
-          <div class="meta-line">${meta}<span class="muted">score ${escapeHtml(hit.score)}</span></div>
+        <div class="meta-line">${meta}<span class="muted">${escapeHtml(retrievalText || "BM25")} · score ${escapeHtml(hit.score)}</span></div>
           ${answer ? `<p><strong>答案：</strong>${escapeHtml(answer)}</p>` : ""}
           ${explanation ? `<p class="muted answer-text">${escapeHtml(explanation.slice(0, 900))}</p>` : ""}
-          <p class="source">来源：${escapeHtml(source)}</p>
+          <p class="source">来源：${escapeHtml(source)}${hit.chunk?.page_start ? ` · 第 ${escapeHtml(hit.chunk.page_start)} 页` : ""}</p>
           ${renderImages(hit.images)}
         </article>
       `;
@@ -344,7 +353,9 @@
       ).join("");
       el.innerHTML = `
         <pre class="answer-text">${escapeHtml(payload.answer || "")}</pre>
+        <p class="muted">检索模式：${escapeHtml(payload.retrieval_mode || "BM25")}</p>
         ${citations ? `<h3>来源</h3>${citations}` : ""}
+        ${payload.vector_error ? `<p class="error">向量检索失败，已回退到 BM25：${escapeHtml(payload.vector_error)}</p>` : ""}
         ${payload.llm_error ? `<p class="error">LLM 调用失败，已回退到原文模式：${escapeHtml(payload.llm_error)}</p>` : ""}
       `;
     }

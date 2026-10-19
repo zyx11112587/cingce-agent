@@ -1,9 +1,11 @@
-# Core runtime: Python 3.11+.
-# The built-in parser, SQLite FTS5 retrieval, HTTP server and OpenAI-compatible
-# client all use the Python standard library, so no third-party package is
-# required for the default local run.
-#
-# Optional extensions can be installed later without changing the core paths:
-# sentence-transformers
-# faiss-cpu
-# paddleocr
+# Core runtime: Python 3.11+
+numpy>=1.26
+pypdf>=4.0.0
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+
+# Recommended vector backend (optional because the NumPy fallback works):
+# faiss-cpu>=1.8.0
+
+# Optional local embedding backend:
+# sentence-transformers>=3.0.0

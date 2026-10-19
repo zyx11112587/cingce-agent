@@ -110,7 +110,7 @@ def load_system_prompt(root) -> str:
     if prompt_path.exists():
         return prompt_path.read_text(encoding="utf-8").strip()
     return (
-        "你是考公真题与考点问答助手。只能依据用户提供的检索证据回答。"
+        "你是考公真题、政治理论与申论资料问答助手。只能依据用户提供的检索证据回答。"
         "证据不足时明确说明，不得编造题目、答案、年份、地区、法条或解析。"
-        "回答时标注证据来源。"
+        "回答时标注证据来源和页码。"
     )

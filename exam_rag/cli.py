@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 
 from .config import Settings
+from .document_loader import DocumentDependencyError
 from .index import IndexStore
-from .ingest import ingest_directory
+from .ingest import ingest_directories
 from .rag import RAGService
 from .server import run_server
 
@@ -23,6 +24,8 @@ def _add_common_query_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--year", default="")
     parser.add_argument("--subject", default="")
     parser.add_argument("--region", default="")
+    parser.add_argument("--doc-type", default="")
+    parser.add_argument("--format", dest="source_format", default="")
     parser.add_argument("--json", action="store_true")
 
 
@@ -33,9 +36,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ingest = subparsers.add_parser("ingest", help="Parse Markdown and rebuild the index")
-    ingest.add_argument("--input", default="", help="Markdown root directory")
+    ingest = subparsers.add_parser(
+        "ingest",
+        help="Parse Markdown/PDF/DOCX and rebuild the BM25 + vector index",
+    )
+    ingest.add_argument(
+        "--input",
+        action="append",
+        default=[],
+        help="Input directory; repeat for multiple roots",
+    )
     ingest.add_argument("--db", default="", help="SQLite index path")
+    ingest.add_argument(
+        "--skip-vectors",
+        action="store_true",
+        help="Rebuild BM25 only, without calling the embedding provider",
+    )
 
     search = subparsers.add_parser("search", help="Search question and explanation chunks")
     _add_common_query_args(search)
@@ -69,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
 
     if args.command == "ingest":
-        input_dir = Path(args.input).resolve() if args.input else settings.input_dir
+        input_dirs = (
+            [Path(path).resolve() for path in args.input]
+            if args.input
+            else list(settings.effective_input_dirs)
+        )
         db_path = Path(args.db).resolve() if args.db else settings.db_path
         started = time.time()
 
@@ -80,9 +100,20 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
 
-        print(f"Input: {input_dir}")
+        for input_dir in input_dirs:
+            print(f"Input: {input_dir}")
         print(f"Database: {db_path}")
-        result = ingest_directory(input_dir, db_path, progress=progress)
+        try:
+            result = ingest_directories(
+                input_dirs,
+                db_path,
+                settings=settings,
+                skip_vectors=args.skip_vectors,
+                progress=progress,
+            )
+        except (DocumentDependencyError, FileNotFoundError, ValueError) as exc:
+            print(f"Ingest failed: {exc}", file=sys.stderr)
+            return 1
         result["elapsed_seconds"] = round(time.time() - started, 2)
         _print_json(result)
         return 0
@@ -104,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         "year": args.year,
         "subject": args.subject,
         "region": args.region,
+        "doc_type": args.doc_type,
+        "source_format": args.source_format,
     }
     if args.command == "search":
         result = service.search(
@@ -126,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(result)
     else:
         print(result["answer"])
+        print(f"\n检索模式：{result.get('retrieval_mode', 'bm25')}")
         if result.get("citations"):
             print("\n来源：")
             for citation in result["citations"]:

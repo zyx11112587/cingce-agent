@@ -382,6 +382,8 @@ def _chunk_generic_text(
                         question_type="知识点",
                         source_path=str(source_path.resolve()),
                         source_rel=source_rel,
+                        source_format="md",
+                        doc_type=subject,
                     )
                 )
             if start + max_chars >= len(body):
@@ -436,6 +438,8 @@ def question_chunk(question: Question) -> Chunk:
         question_type=question.question_type,
         source_path=question.source_path,
         source_rel=question.source_rel,
+        source_format="md",
+        doc_type=question.subject,
     )
 
 
@@ -463,4 +467,6 @@ def explanation_chunk(question: Question) -> Chunk:
         question_type=question.question_type,
         source_path=question.source_path,
         source_rel=question.source_rel,
+        source_format="md",
+        doc_type=question.subject,
     )

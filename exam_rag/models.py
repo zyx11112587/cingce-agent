@@ -76,6 +76,10 @@ class Chunk:
     question_type: str
     source_path: str
     source_rel: str
+    source_format: str = "md"
+    doc_type: str = ""
+    page_start: int = 0
+    page_end: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +95,10 @@ class Chunk:
             "question_type": self.question_type,
             "source_path": self.source_path,
             "source_rel": self.source_rel,
+            "source_format": self.source_format,
+            "doc_type": self.doc_type,
+            "page_start": self.page_start,
+            "page_end": self.page_end,
         }
 
 
@@ -100,6 +108,7 @@ class SearchHit:
     chunk: Chunk
     question: Question | None
     images: list[ImageRef]
+    retrieval: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +116,7 @@ class SearchHit:
             "chunk": self.chunk.to_dict(),
             "question": self.question.to_dict() if self.question else None,
             "images": [image.to_dict() for image in self.images],
+            "retrieval": self.retrieval,
         }
 
 

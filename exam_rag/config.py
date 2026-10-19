@@ -44,23 +44,53 @@ class Settings:
     llm_model: str
     llm_timeout: int
     default_top_k: int
+    input_dirs: tuple[Path, ...] = ()
+    embedding_provider: str = "auto"
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+    embedding_batch_size: int = 32
+    vector_dir: Path = PROJECT_ROOT / "data" / "index" / "vectors"
+    bm25_weight: float = 0.5
+    vector_weight: float = 0.5
+    rrf_k: int = 60
 
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_base_url and self.llm_model)
+
+    @property
+    def effective_input_dirs(self) -> tuple[Path, ...]:
+        return self.input_dirs or (self.input_dir,)
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         project_root = (root or PROJECT_ROOT).resolve()
         _load_dotenv(project_root / ".env")
 
-        default_input = project_root / "xingcezhenti"
-        if not default_input.exists():
-            default_input = project_root / "data" / "raw"
-
-        input_dir = Path(
-            _env("EXAM_RAG_INPUT_DIR", default=str(default_input))
-        ).expanduser()
+        explicit_inputs = _env("EXAM_RAG_INPUT_DIRS", default="")
+        if explicit_inputs:
+            input_dirs = tuple(
+                Path(part.strip()).expanduser().resolve()
+                for part in explicit_inputs.split(os.pathsep)
+                if part.strip()
+            )
+        else:
+            singular_input = _env("EXAM_RAG_INPUT_DIR", default="")
+            if singular_input:
+                input_dirs = (Path(singular_input).expanduser().resolve(),)
+            else:
+                candidates = (
+                    project_root / "xingcezhenti",
+                    project_root / "data" / "raw",
+                    project_root / "data" / "politics",
+                    project_root / "data" / "shenlun",
+                    project_root / "data" / "materials",
+                )
+                input_dirs = tuple(path.resolve() for path in candidates if path.exists())
+                if not input_dirs:
+                    input_dirs = ((project_root / "data" / "raw").resolve(),)
+        input_dir = input_dirs[0]
         db_path = Path(
             _env(
                 "EXAM_RAG_DB",
@@ -99,4 +129,36 @@ class Settings:
             ),
             llm_timeout=int(_env("EXAM_RAG_LLM_TIMEOUT", default="120")),
             default_top_k=int(_env("EXAM_RAG_TOP_K", default="5")),
+            input_dirs=input_dirs,
+            embedding_provider=_env(
+                "EXAM_RAG_EMBEDDING_PROVIDER",
+                default="auto",
+            ).lower(),
+            embedding_base_url=_env(
+                "EXAM_RAG_EMBEDDING_BASE_URL",
+                "EMBEDDING_BASE_URL",
+                default="",
+            ).rstrip("/"),
+            embedding_api_key=_env(
+                "EXAM_RAG_EMBEDDING_API_KEY",
+                "EMBEDDING_API_KEY",
+                default="",
+            ),
+            embedding_model=_env(
+                "EXAM_RAG_EMBEDDING_MODEL",
+                "EMBEDDING_MODEL",
+                default="",
+            ),
+            embedding_batch_size=int(
+                _env("EXAM_RAG_EMBEDDING_BATCH_SIZE", default="32")
+            ),
+            vector_dir=Path(
+                _env(
+                    "EXAM_RAG_VECTOR_DIR",
+                    default=str(project_root / "data" / "index" / "vectors"),
+                )
+            ).expanduser().resolve(),
+            bm25_weight=float(_env("EXAM_RAG_BM25_WEIGHT", default="0.5")),
+            vector_weight=float(_env("EXAM_RAG_VECTOR_WEIGHT", default="0.5")),
+            rrf_k=int(_env("EXAM_RAG_RRF_K", default="60")),
         )

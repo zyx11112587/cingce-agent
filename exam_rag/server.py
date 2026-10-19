@@ -54,7 +54,15 @@ class ExamRAGRequestHandler(BaseHTTPRequestHandler):
 
     def _filters(self, params: dict[str, list[str]]) -> dict[str, str]:
         filters: dict[str, str] = {}
-        for key in ("year", "subject", "region", "question_type", "chunk_type"):
+        for key in (
+            "year",
+            "subject",
+            "region",
+            "question_type",
+            "chunk_type",
+            "doc_type",
+            "source_format",
+        ):
             value = (params.get(key) or [""])[0].strip()
             if value:
                 filters[key] = value
@@ -86,10 +94,20 @@ class ExamRAGRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/health":
+            try:
+                vector_ready = self.service.vector_store.ready
+            except (OSError, ValueError):
+                vector_ready = False
             self._send_json(
                 {
                     "status": "ok",
                     "llm_enabled": self.service.llm.enabled,
+                    "vector_backend": getattr(
+                        self.service.vector_store,
+                        "backend",
+                        "unknown",
+                    ),
+                    "vector_ready": vector_ready,
                     "index": str(self.service.settings.db_path),
                 }
             )
@@ -106,16 +124,25 @@ class ExamRAGRequestHandler(BaseHTTPRequestHandler):
                 return
             mode = (params.get("mode") or ["search"])[0]
             top_k = self._top_k(params, self.service.settings.default_top_k)
+            hits = self.service.search(
+                query,
+                mode=mode,
+                top_k=top_k,
+                filters=self._filters(params),
+            )
             self._send_json(
                 {
                     "query": query,
                     "mode": mode,
-                    "hits": self.service.search(
-                        query,
-                        mode=mode,
-                        top_k=top_k,
-                        filters=self._filters(params),
+                    "retrieval_mode": (
+                        "hybrid"
+                        if any(
+                            hit.get("retrieval", {}).get("vector_rank")
+                            for hit in hits
+                        )
+                        else "bm25"
                     ),
+                    "hits": hits,
                 }
             )
             return

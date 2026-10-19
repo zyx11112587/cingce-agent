@@ -12,6 +12,9 @@ from .models import Chunk, ImageRef, Question, SearchHit
 
 SEARCH_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]{2,}")
 QID_LOOKUP_RE = re.compile(r"\bqid\s*[:：]?\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
+QUERY_STOPWORD_RE = re.compile(
+    r"是什么|什么是|如何|怎样|为什么|有哪些|包括|请|简述|谈谈|说明|理解|介绍|的|了|吗|呢|[?？]"
+)
 
 
 def _json_load(value: str, default: Any) -> Any:
@@ -22,7 +25,18 @@ def _json_load(value: str, default: Any) -> Any:
 
 
 def _search_terms(query: str) -> list[str]:
-    terms = [match.group(0).strip() for match in SEARCH_TOKEN_RE.finditer(query)]
+    normalized = QUERY_STOPWORD_RE.sub(" ", query)
+    segments = [
+        part.strip()
+        for part in re.split(r"[\s,，。；;：:、]+", normalized)
+        if part.strip()
+    ]
+    terms: list[str] = []
+    for segment in [normalized, *segments]:
+        terms.extend(
+            match.group(0).strip()
+            for match in SEARCH_TOKEN_RE.finditer(segment)
+        )
     result: list[str] = []
     for term in terms:
         if len(term) > 80:
@@ -68,6 +82,7 @@ class IndexStore:
             if reset:
                 for statement in (
                     "DROP TABLE IF EXISTS search_fts",
+                    "DROP TABLE IF EXISTS vector_map",
                     "DROP TABLE IF EXISTS images",
                     "DROP TABLE IF EXISTS chunks",
                     "DROP TABLE IF EXISTS questions",
@@ -105,7 +120,11 @@ class IndexStore:
                     subject TEXT NOT NULL DEFAULT '',
                     question_type TEXT NOT NULL DEFAULT '',
                     source_path TEXT NOT NULL DEFAULT '',
-                    source_rel TEXT NOT NULL DEFAULT ''
+                    source_rel TEXT NOT NULL DEFAULT '',
+                    source_format TEXT NOT NULL DEFAULT 'md',
+                    doc_type TEXT NOT NULL DEFAULT '',
+                    page_start INTEGER NOT NULL DEFAULT 0,
+                    page_end INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_chunks_qid
@@ -128,6 +147,11 @@ class IndexStore:
                 CREATE INDEX IF NOT EXISTS idx_images_qid
                     ON images(qid);
 
+                CREATE TABLE IF NOT EXISTS vector_map (
+                    vector_id INTEGER PRIMARY KEY,
+                    chunk_id TEXT UNIQUE NOT NULL
+                );
+
                 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
                     chunk_id UNINDEXED,
                     text,
@@ -135,6 +159,31 @@ class IndexStore:
                 );
                 """
             )
+            migrations = {
+                "questions": {
+                    "record_id": "TEXT NOT NULL DEFAULT ''",
+                },
+                "chunks": {
+                    "record_id": "TEXT NOT NULL DEFAULT ''",
+                    "source_format": "TEXT NOT NULL DEFAULT 'md'",
+                    "doc_type": "TEXT NOT NULL DEFAULT ''",
+                    "page_start": "INTEGER NOT NULL DEFAULT 0",
+                    "page_end": "INTEGER NOT NULL DEFAULT 0",
+                },
+                "images": {
+                    "record_id": "TEXT NOT NULL DEFAULT ''",
+                },
+            }
+            for table, columns in migrations.items():
+                existing = {
+                    row["name"]
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                }
+                for column, definition in columns.items():
+                    if column not in existing:
+                        connection.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                        )
 
     def reset(self) -> None:
         self.initialize(reset=True)
@@ -162,6 +211,7 @@ class IndexStore:
                 for question in questions
             }
             connection.execute("DELETE FROM search_fts")
+            connection.execute("DELETE FROM vector_map")
             connection.execute("DELETE FROM images")
             connection.execute("DELETE FROM chunks")
             connection.execute("DELETE FROM questions")
@@ -215,8 +265,9 @@ class IndexStore:
                     """
                     INSERT OR REPLACE INTO chunks (
                         chunk_id, record_id, qid, chunk_type, text, title, year, region,
-                        subject, question_type, source_path, source_rel
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        subject, question_type, source_path, source_rel,
+                        source_format, doc_type, page_start, page_end
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         chunk.chunk_id,
@@ -231,6 +282,10 @@ class IndexStore:
                         chunk.question_type,
                         chunk.source_path,
                         chunk.source_rel,
+                        chunk.source_format,
+                        chunk.doc_type,
+                        chunk.page_start,
+                        chunk.page_end,
                     ),
                 )
                 connection.execute(
@@ -255,6 +310,10 @@ class IndexStore:
             question_type=row["question_type"],
             source_path=row["source_path"],
             source_rel=row["source_rel"],
+            source_format=row["source_format"],
+            doc_type=row["doc_type"],
+            page_start=row["page_start"],
+            page_end=row["page_end"],
         )
 
     def _question_from_row(self, row: sqlite3.Row | None) -> Question | None:
@@ -341,6 +400,91 @@ class IndexStore:
                 anchor=row["anchor"],
             )
 
+    def set_vector_mapping(self, chunk_ids: list[str]) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM vector_map")
+            connection.executemany(
+                "INSERT INTO vector_map (vector_id, chunk_id) VALUES (?, ?)",
+                list(enumerate(chunk_ids)),
+            )
+
+    def chunk_ids_for_vector_ids(self, vector_ids: list[int]) -> dict[int, str]:
+        if not vector_ids:
+            return {}
+        placeholders = ",".join("?" for _ in vector_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT vector_id, chunk_id
+                FROM vector_map
+                WHERE vector_id IN ({placeholders})
+                """,
+                vector_ids,
+            ).fetchall()
+        return {
+            int(row["vector_id"]): row["chunk_id"]
+            for row in rows
+        }
+
+    def _hit_for_chunk(
+        self,
+        connection: sqlite3.Connection,
+        chunk: Chunk,
+        score: float,
+        retrieval: dict[str, Any] | None = None,
+    ) -> SearchHit:
+        question = (
+            self._question_from_row(
+                connection.execute(
+                    "SELECT * FROM questions WHERE record_id = ?",
+                    (chunk.record_id,),
+                ).fetchone()
+            )
+            if chunk.record_id
+            else None
+        )
+        images = (
+            self._images_for_record(connection, question.record_id)
+            if question
+            else []
+        )
+        return SearchHit(
+            score=score,
+            chunk=chunk,
+            question=question,
+            images=images,
+            retrieval=retrieval or {},
+        )
+
+    def get_hits_by_chunk_ids(
+        self,
+        chunk_ids: list[str],
+        scores: dict[str, float] | None = None,
+        retrievals: dict[str, dict[str, Any]] | None = None,
+    ) -> list[SearchHit]:
+        if not chunk_ids:
+            return []
+        scores = scores or {}
+        retrievals = retrievals or {}
+        result: list[SearchHit] = []
+        with self._connect() as connection:
+            for chunk_id in chunk_ids:
+                row = connection.execute(
+                    "SELECT * FROM chunks WHERE chunk_id = ?",
+                    (chunk_id,),
+                ).fetchone()
+                chunk = self._chunk_from_row(row)
+                if chunk:
+                    result.append(
+                        self._hit_for_chunk(
+                            connection,
+                            chunk,
+                            scores.get(chunk_id, 0.0),
+                            retrievals.get(chunk_id),
+                        )
+                    )
+        return result
+
     def _direct_hit(
         self,
         connection: sqlite3.Connection,
@@ -390,7 +534,15 @@ class IndexStore:
     ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
-        for key in ("year", "subject", "region", "question_type", "chunk_type"):
+        for key in (
+            "year",
+            "subject",
+            "region",
+            "question_type",
+            "chunk_type",
+            "doc_type",
+            "source_format",
+        ):
             value = filters.get(key)
             if value in (None, ""):
                 continue
@@ -494,8 +646,10 @@ class IndexStore:
                     score += 5.0
                 if mode == "search":
                     score += 1.2 if chunk.chunk_type == "question" else 0.0
+                    score += 0.5 if chunk.chunk_type == "document" else 0.0
                 elif mode == "knowledge":
                     score += 1.5 if chunk.chunk_type == "explanation" else 0.0
+                    score += 0.8 if chunk.chunk_type == "document" else 0.0
                 elif mode == "explain":
                     score += 2.0 if chunk.chunk_type in {"question", "explanation"} else 0.0
 
@@ -541,9 +695,13 @@ class IndexStore:
             files = connection.execute(
                 "SELECT COUNT(DISTINCT source_rel) AS count FROM chunks"
             ).fetchone()["count"]
+            vector_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM vector_map"
+            ).fetchone()["count"]
             return {
                 "questions": int(questions),
                 "chunks": int(chunks),
                 "images": int(images),
                 "files": int(files),
+                "vectors": int(vector_count),
             }
