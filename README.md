@@ -8,7 +8,10 @@
 - OpenAI 兼容的 LLM 和 embeddings API
 - 未配置生成模型时的本地证据摘录回退
 
-## 目录约定
+核心检索使用 Python 标准库 `sqlite3` 的 FTS5 trigram 索引。题目、答案、官方解析和图片引用会被结构化保存，不依赖云端服务。
+真题来源：https://github.com/ERRRC/xingcezhenti
+
+## 目录
 
 ```text
 xingcezhenti/          行测 Markdown 真题
